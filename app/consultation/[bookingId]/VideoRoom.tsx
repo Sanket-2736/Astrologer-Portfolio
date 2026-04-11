@@ -63,6 +63,15 @@ export default function VideoRoom({
            now <= new Date(slotEndISO).getTime() + 15 * 60 * 1000
   }, [slotStartISO, slotEndISO])
 
+  // Check if astrologer has already started the room (for early starts)
+  const checkRoomActive = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/meeting/room-status?bookingId=${bookingId}`)
+      const data = await res.json()
+      return !!data.active
+    } catch { return false }
+  }, [bookingId])
+
   // ── Session completion ─────────────────────────────────────────────────
   const doComplete = useCallback(async () => {
     if (completedRef.current) return
@@ -228,19 +237,23 @@ export default function VideoRoom({
     }
   }, [bookingId, cleanup, createPC, displayName, doComplete, role, slotEndISO])
 
-  // Client: auto-start when in window
+  // Client: auto-start when in window OR when astrologer has started early
   useEffect(() => {
     if (role === 'client') {
       if (clientInWindow()) {
         startCall()
       } else {
-        setPhase('countdown')
+        // Check if astrologer already started — if yes, join immediately
+        checkRoomActive().then((active) => {
+          if (active) startCall()
+          else setPhase('countdown')
+        })
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Client countdown
+  // Client countdown — also polls every 15s for early astrologer start
   useEffect(() => {
     if (phase !== 'countdown') return
     const tick = () => {
@@ -248,9 +261,20 @@ export default function VideoRoom({
       setCountdown(Math.max(0, secsUntil(slotStartISO) - 10 * 60))
     }
     tick()
-    const id = setInterval(tick, 1000)
-    return () => clearInterval(id)
-  }, [phase, slotStartISO, clientInWindow, startCall])
+    const tickId = setInterval(tick, 1000)
+
+    // Poll signaling server every 15s for early astrologer start
+    const pollId = setInterval(async () => {
+      const active = await checkRoomActive()
+      if (active) {
+        clearInterval(tickId)
+        clearInterval(pollId)
+        startCall()
+      }
+    }, 15000)
+
+    return () => { clearInterval(tickId); clearInterval(pollId) }
+  }, [phase, slotStartISO, clientInWindow, startCall, checkRoomActive])
 
   // Controls
   function toggleMic() {
@@ -323,8 +347,12 @@ export default function VideoRoom({
           <p className="text-4xl font-bold gold-text mb-4" style={{ fontFamily: 'var(--font-cinzel)' }}>
             {fmt(countdown)}
           </p>
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
+          <p className="text-sm mb-3" style={{ color: 'var(--text-muted)' }}>
             Meeting room opens 10 minutes before your scheduled time.
+          </p>
+          <p className="text-xs px-3 py-2 rounded-lg inline-block"
+            style={{ background: 'rgba(201,168,76,0.08)', color: 'var(--gold)' }}>
+            ✦ If your astrologer starts early, you will be connected automatically
           </p>
         </div>
       </div>

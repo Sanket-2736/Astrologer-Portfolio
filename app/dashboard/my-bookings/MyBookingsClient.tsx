@@ -33,20 +33,38 @@ function secsUntil(iso: string) {
 
 function JoinButton({ booking }: { booking: Booking }) {
   const [secs, setSecs] = useState(() => secsUntil(booking.date))
+  const [roomActive, setRoomActive] = useState(false)
 
+  // Time-based window check
   useEffect(() => {
     const id = setInterval(() => setSecs(secsUntil(booking.date)), 5000)
     return () => clearInterval(id)
   }, [booking.date])
 
-  // Active window: 10 min before slot until slot + duration + 15 min
-  const activeIn = secs - 10 * 60
-  const isActive = activeIn <= 0 && secs > -(booking.durationMins + 15) * 60
+  // Poll signaling server every 15s to detect early astrologer start
+  useEffect(() => {
+    let cancelled = false
+    async function poll() {
+      try {
+        const res = await fetch(`/api/meeting/room-status?bookingId=${booking._id}`)
+        const data = await res.json()
+        if (!cancelled) setRoomActive(!!data.active)
+      } catch { /* silent */ }
+    }
+    poll()
+    const id = setInterval(poll, 5000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [booking._id])
 
-  if (!isActive) {
+  const activeIn = secs - 10 * 60
+  const inTimeWindow = activeIn <= 0 && secs > -(booking.durationMins + 15) * 60
+  const canJoin = inTimeWindow || roomActive
+
+  if (!canJoin) {
     const mins = Math.ceil(activeIn / 60)
     return (
-      <span className="text-xs px-3 py-1 rounded-full" style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.2)' }}>
+      <span className="text-xs px-3 py-1 rounded-full"
+        style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8', border: '1px solid rgba(99,102,241,0.2)' }}>
         <Video size={11} className="inline mr-1" />
         {mins > 60 ? `Opens in ${Math.ceil(mins / 60)}h` : `Opens in ${mins}m`}
       </span>
@@ -59,7 +77,7 @@ function JoinButton({ booking }: { booking: Booking }) {
       className="flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold transition-all hover:scale-105 animate-pulse"
       style={{ background: 'rgba(74,222,128,0.15)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.4)' }}
     >
-      <Video size={11} /> Join Call
+      <Video size={11} /> {roomActive && !inTimeWindow ? 'Join Now (Early)' : 'Join Call'}
     </Link>
   )
 }

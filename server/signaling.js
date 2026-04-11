@@ -10,7 +10,31 @@ const { Server } = require('socket.io')
 const PORT = process.env.SIGNALING_PORT || 4000
 const NEXT_ORIGIN = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 
-const httpServer = createServer()
+// Maps: roomId (astro-{bookingId}) → { astrologer: socketId, client: socketId }
+const rooms = new Map()
+// Maps: socketId → { bookingId, role, name }
+const peers = new Map()
+
+const httpServer = createServer((req, res) => {
+  // ── HTTP: room-status endpoint ──────────────────────────────────────────
+  // GET /room-status?bookingId=astro-xxx
+  // Returns { active: true } if astrologer is currently in the room
+  if (req.method === 'GET' && req.url?.startsWith('/room-status')) {
+    const url = new URL(req.url, `http://localhost:${PORT}`)
+    const bookingId = url.searchParams.get('bookingId')
+    const room = bookingId ? rooms.get(bookingId) : null
+    const active = !!(room?.astrologer)
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    })
+    res.end(JSON.stringify({ active }))
+    return
+  }
+  res.writeHead(404)
+  res.end()
+})
+
 const io = new Server(httpServer, {
   cors: {
     origin: [NEXT_ORIGIN, 'http://localhost:3000'],
@@ -18,11 +42,6 @@ const io = new Server(httpServer, {
     credentials: true,
   },
 })
-
-// Maps: bookingId → { astrologer: socketId, client: socketId }
-const rooms = new Map()
-// Maps: socketId → { bookingId, role, name }
-const peers = new Map()
 
 io.on('connection', (socket) => {
   console.log(`[+] Connected: ${socket.id}`)
