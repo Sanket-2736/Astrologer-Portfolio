@@ -10,6 +10,8 @@ import { createSession, deleteSession } from '@/lib/session'
 export type AuthState = {
   errors?: Record<string, string[]>
   message?: string
+  success?: boolean
+  redirectTo?: string
 } | undefined
 
 // ── Client Signup ──────────────────────────────────────────────────────────
@@ -44,12 +46,11 @@ export async function signupAction(state: AuthState, formData: FormData): Promis
     })
 
     await createSession({ userId: user._id.toString(), role: 'client', name: user.name })
+    return { success: true, redirectTo: '/dashboard' }
   } catch (err) {
     console.error('Signup error:', err)
     return { message: 'Something went wrong. Please try again.' }
   }
-
-  redirect('/dashboard')
 }
 
 // ── Client Login ───────────────────────────────────────────────────────────
@@ -68,6 +69,7 @@ export async function loginAction(state: AuthState, formData: FormData): Promise
   try {
     await connectDB()
 
+    // Check if admin login
     if (email === adminEmail) {
       if (password !== adminPassword) {
         return { message: 'Invalid email or password.' }
@@ -79,10 +81,10 @@ export async function loginAction(state: AuthState, formData: FormData): Promise
         name: 'Jyotish Acharya',
       })
 
-      redirect('/admin/dashboard')
-      return
+      return { success: true, redirectTo: '/admin/dashboard' }
     }
 
+    // Regular client login
     const user = await User.findOne({ email, role: 'client' })
     if (!user) return { message: 'Invalid email or password.' }
 
@@ -95,12 +97,11 @@ export async function loginAction(state: AuthState, formData: FormData): Promise
       name: user.name,
     })
 
+    return { success: true, redirectTo: returnUrl.startsWith('/') ? returnUrl : '/dashboard' }
   } catch (err) {
     console.error('Login error:', err)
     return { message: 'Something went wrong. Please try again.' }
   }
-
-  redirect(returnUrl.startsWith('/') ? returnUrl : '/dashboard')
 }
 
 // ── Astrologer Login ───────────────────────────────────────────────────────
@@ -113,14 +114,22 @@ export async function adminLoginAction(state: AuthState, formData: FormData): Pr
   const adminEmail = process.env.ADMIN_EMAIL?.toLowerCase()
   const adminPassword = process.env.ADMIN_PASSWORD
 
-  console.log("Email: ", adminEmail, "Password: ", password)
+  if (!adminEmail || !adminPassword) {
+    console.error('ADMIN_EMAIL or ADMIN_PASSWORD not configured in .env')
+    return { message: 'Admin credentials not configured. Please contact support.' }
+  }
 
   if (email !== adminEmail || password !== adminPassword) {
     return { message: 'Invalid credentials.' }
   }
 
-  await createSession({ userId: 'admin', role: 'astrologer', name: 'Jyotish Acharya' })
-  redirect('/admin/dashboard')
+  try {
+    await createSession({ userId: 'admin', role: 'astrologer', name: 'Jyotish Acharya' })
+    return { success: true, redirectTo: '/admin/dashboard' }
+  } catch (err) {
+    console.error('Admin login error:', err)
+    return { message: 'Something went wrong. Please try again.' }
+  }
 }
 
 // ── Logout ─────────────────────────────────────────────────────────────────

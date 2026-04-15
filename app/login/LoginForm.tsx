@@ -1,6 +1,7 @@
 'use client'
 
-import { useActionState } from 'react'
+import { useActionState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { loginAction } from '@/lib/auth-actions'
 import { Star } from 'lucide-react'
@@ -17,7 +18,15 @@ const inputStyle = {
 }
 
 export default function LoginForm({ returnUrl }: { returnUrl: string }) {
+  const router = useRouter()
   const [state, action, pending] = useActionState(loginAction, undefined)
+
+  // Handle redirect on successful login
+  useEffect(() => {
+    if (state?.success && state?.redirectTo) {
+      router.push(state.redirectTo)
+    }
+  }, [state, router])
 
   return (
     <div

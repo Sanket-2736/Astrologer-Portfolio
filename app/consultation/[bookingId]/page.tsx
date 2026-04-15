@@ -4,6 +4,18 @@ import { connectDB } from '@/lib/mongodb'
 import Appointment from '@/models/Appointment'
 import '@/models/User'
 import VideoRoom from './VideoRoom'
+import type { Metadata, Viewport } from 'next'
+
+export const metadata: Metadata = {
+  title: 'Video Consultation | Jyotish Acharya',
+}
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+}
 
 export default async function ConsultationPage(props: PageProps<'/consultation/[bookingId]'>) {
   const { bookingId } = await props.params

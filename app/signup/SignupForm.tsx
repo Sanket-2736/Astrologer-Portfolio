@@ -1,6 +1,7 @@
 'use client'
 
-import { useActionState } from 'react'
+import { useActionState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { signupAction } from '@/lib/auth-actions'
 import { Star } from 'lucide-react'
@@ -38,7 +39,15 @@ function Field({
 }
 
 export default function SignupForm() {
+  const router = useRouter()
   const [state, action, pending] = useActionState(signupAction, undefined)
+
+  // Handle redirect on successful signup
+  useEffect(() => {
+    if (state?.success && state?.redirectTo) {
+      router.push(state.redirectTo)
+    }
+  }, [state, router])
 
   return (
     <div

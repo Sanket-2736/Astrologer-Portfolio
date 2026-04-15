@@ -3,8 +3,29 @@
 import Link from 'next/link'
 import { motion } from 'framer-motion'
 import { Sparkles, ChevronDown } from 'lucide-react'
+import { useMemo } from 'react'
 
 export default function HeroSection() {
+  // Generate stars once on mount to avoid hydration mismatch
+  const stars = useMemo(() => {
+    return [...Array(40)].map((_, i) => {
+      // Use a seeded random based on index for consistent SSR/client rendering
+      const seed = i * 9301 + 49297
+      const random1 = (seed % 233280) / 233280
+      const random2 = ((seed * 2) % 233280) / 233280
+      const random3 = ((seed * 3) % 233280) / 233280
+      const random4 = ((seed * 4) % 233280) / 233280
+      
+      return {
+        width: random1 * 2 + 1,
+        height: random2 * 2 + 1,
+        top: random3 * 100,
+        left: random4 * 100,
+        opacity: (random1 * 0.6) + 0.2,
+      }
+    })
+  }, [])
+
   return (
     <section
       className="relative min-h-screen flex items-center justify-center overflow-hidden"
@@ -15,17 +36,17 @@ export default function HeroSection() {
     >
       {/* Decorative stars */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        {[...Array(40)].map((_, i) => (
+        {stars.map((star, i) => (
           <div
             key={i}
             className="absolute rounded-full"
             style={{
-              width: Math.random() * 2 + 1 + 'px',
-              height: Math.random() * 2 + 1 + 'px',
-              top: Math.random() * 100 + '%',
-              left: Math.random() * 100 + '%',
+              width: star.width + 'px',
+              height: star.height + 'px',
+              top: star.top + '%',
+              left: star.left + '%',
               background: 'var(--gold-light)',
-              opacity: Math.random() * 0.6 + 0.2,
+              opacity: star.opacity,
             }}
           />
         ))}

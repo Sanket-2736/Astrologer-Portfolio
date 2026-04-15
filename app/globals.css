@@ -35,6 +35,14 @@ body {
   min-height: 100vh;
 }
 
+/* Prevent mobile keyboard from resizing viewport */
+body.consultation-page {
+  position: fixed;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+}
+
 /* Gold gradient text utility */
 .gold-text {
   background: linear-gradient(135deg, var(--gold-light), var(--gold), var(--gold-dark));

@@ -88,6 +88,11 @@ io.on("connection", (socket) => {
     astrologerInRoom.delete(bookingId);
   });
 
+  socket.on("chat-message", ({ bookingId, sender, senderRole, message, timestamp }) => {
+    // Broadcast chat message to other participants in the room
+    socket.to(bookingId).emit("chat-message", { sender, senderRole, message, timestamp });
+  });
+
   socket.on("disconnect", () => {
     const { bookingId, role } = socket.data || {};
     if (bookingId) {

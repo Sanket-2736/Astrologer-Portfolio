@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { io, Socket } from 'socket.io-client'
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Clock, Wifi, WifiOff } from 'lucide-react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Clock, Wifi, WifiOff, MessageSquare, Send, X } from 'lucide-react'
 import { emailSessionCompleted } from '@/lib/email'
 
 interface Props {
@@ -16,6 +16,14 @@ interface Props {
 }
 
 type Phase = 'confirm' | 'countdown' | 'connecting' | 'waiting' | 'live' | 'ended'
+
+interface ChatMessage {
+  id: string
+  sender: string
+  senderRole: 'client' | 'astrologer'
+  message: string
+  timestamp: number
+}
 
 const ICE_SERVERS = {
   iceServers: [
@@ -37,6 +45,27 @@ function fmt(s: number) {
   return `${sec}s`
 }
 
+// Format time consistently for SSR/CSR
+function formatTime(isoString: string): string {
+  const date = new Date(isoString)
+  const hours = date.getHours()
+  const minutes = date.getMinutes()
+  const ampm = hours >= 12 ? 'PM' : 'AM'
+  const displayHours = hours % 12 || 12
+  const displayMinutes = minutes.toString().padStart(2, '0')
+  return `${displayHours}:${displayMinutes} ${ampm}`
+}
+
+function formatMessageTime(timestamp: number): string {
+  const date = new Date(timestamp)
+  const hours = date.getHours()
+  const minutes = date.getMinutes()
+  const ampm = hours >= 12 ? 'PM' : 'AM'
+  const displayHours = hours % 12 || 12
+  const displayMinutes = minutes.toString().padStart(2, '0')
+  return `${displayHours}:${displayMinutes} ${ampm}`
+}
+
 export default function VideoRoom({
   bookingId, role, displayName,
   slotStartISO, slotEndISO, consultationType, clientEmail,
@@ -48,6 +77,9 @@ export default function VideoRoom({
   const localStreamRef = useRef<MediaStream | null>(null)
   const completedRef = useRef(false)
   const remoteSocketIdRef = useRef<string | null>(null)
+  const makingOfferRef = useRef(false)
+  const isSettingRemoteAnswerPendingRef = useRef(false)
+  const chatEndRef = useRef<HTMLDivElement>(null)
 
   const [phase, setPhase] = useState<Phase>('confirm')
   const [muted, setMuted] = useState(false)
@@ -56,6 +88,18 @@ export default function VideoRoom({
   const [statusMsg, setStatusMsg] = useState('Connecting…')
   const [remoteName, setRemoteName] = useState('')
   const [error, setError] = useState('')
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [unreadCount, setUnreadCount] = useState(0)
+
+  // Add body class to prevent mobile keyboard issues
+  useEffect(() => {
+    document.body.classList.add('consultation-page')
+    return () => {
+      document.body.classList.remove('consultation-page')
+    }
+  }, [])
 
   const clientInWindow = useCallback(() => {
     const now = Date.now()
@@ -91,21 +135,40 @@ export default function VideoRoom({
 
   // ── Cleanup ────────────────────────────────────────────────────────────
   const cleanup = useCallback(() => {
-    localStreamRef.current?.getTracks().forEach((t) => t.stop())
-    pcRef.current?.close()
-    socketRef.current?.disconnect()
-    pcRef.current = null
-    socketRef.current = null
-    localStreamRef.current = null
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop())
+      localStreamRef.current = null
+    }
+    if (pcRef.current) {
+      pcRef.current.close()
+      pcRef.current = null
+    }
+    if (socketRef.current) {
+      socketRef.current.disconnect()
+      socketRef.current = null
+    }
+    makingOfferRef.current = false
+    isSettingRemoteAnswerPendingRef.current = false
   }, [])
 
   // ── Create RTCPeerConnection ───────────────────────────────────────────
   const createPC = useCallback((targetSocketId: string) => {
+    // Close existing connection if any
+    if (pcRef.current) {
+      pcRef.current.close()
+    }
+
     const pc = new RTCPeerConnection(ICE_SERVERS)
     pcRef.current = pc
 
     // Add local tracks
-    localStreamRef.current?.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current!))
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => {
+        if (localStreamRef.current) {
+          pc.addTrack(t, localStreamRef.current)
+        }
+      })
+    }
 
     // Remote stream → remote video
     pc.ontrack = (e) => {
@@ -128,11 +191,22 @@ export default function VideoRoom({
 
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState
-      if (state === 'connected') { setPhase('live'); setStatusMsg('Connected') }
+      console.log('Connection state:', state)
+      if (state === 'connected') { 
+        setPhase('live')
+        setStatusMsg('Connected')
+      }
       if (state === 'disconnected' || state === 'failed') {
         setStatusMsg('Connection lost')
         setError('Peer disconnected. Please refresh.')
       }
+      if (state === 'closed') {
+        console.log('Connection closed')
+      }
+    }
+
+    pc.onsignalingstatechange = () => {
+      console.log('Signaling state:', pc.signalingState)
     }
 
     return pc
@@ -145,13 +219,24 @@ export default function VideoRoom({
 
     // 1. Get local media
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }, 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      })
       localStreamRef.current = stream
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream
         localVideoRef.current.muted = true // prevent echo
       }
-    } catch {
+    } catch (err) {
+      console.error('Media access error:', err)
       setError('Camera/microphone access denied. Please allow permissions and refresh.')
       setPhase(role === 'astrologer' ? 'confirm' : 'countdown')
       return
@@ -169,7 +254,8 @@ export default function VideoRoom({
       socket.emit('join-room', { bookingId, role, name: displayName })
     })
 
-    socket.on('connect_error', () => {
+    socket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err)
       setError('Cannot connect to signaling server. Make sure it is running.')
       setPhase(role === 'astrologer' ? 'confirm' : 'countdown')
     })
@@ -182,42 +268,124 @@ export default function VideoRoom({
 
     // Astrologer initiates offer
     socket.on('ready-to-call', async ({ targetSocketId }: { targetSocketId: string }) => {
-      remoteSocketIdRef.current = targetSocketId
-      const pc = createPC(targetSocketId)
-      const offer = await pc.createOffer()
-      await pc.setLocalDescription(offer)
-      socket.emit('call-user', { targetSocketId, offer })
-      setStatusMsg('Calling…')
+      try {
+        remoteSocketIdRef.current = targetSocketId
+        makingOfferRef.current = true
+        
+        const pc = createPC(targetSocketId)
+        const offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        
+        socket.emit('call-user', { targetSocketId, offer: pc.localDescription })
+        setStatusMsg('Calling…')
+        
+        makingOfferRef.current = false
+      } catch (err) {
+        console.error('Error creating offer:', err)
+        setError('Failed to create call. Please refresh.')
+        makingOfferRef.current = false
+      }
     })
 
     // Client receives offer → sends answer
     socket.on('incoming-call', async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
-      remoteSocketIdRef.current = from
-      const pc = createPC(from)
-      await pc.setRemoteDescription(new RTCSessionDescription(offer))
-      const answer = await pc.createAnswer()
-      await pc.setLocalDescription(answer)
-      socket.emit('call-accepted', { targetSocketId: from, answer })
-      setStatusMsg('Connecting…')
+      try {
+        remoteSocketIdRef.current = from
+        const pc = createPC(from)
+        
+        await pc.setRemoteDescription(new RTCSessionDescription(offer))
+        const answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        
+        socket.emit('call-accepted', { targetSocketId: from, answer: pc.localDescription })
+        setStatusMsg('Connecting…')
+      } catch (err) {
+        console.error('Error handling incoming call:', err)
+        setError('Failed to answer call. Please refresh.')
+      }
     })
 
     // Astrologer receives answer
     socket.on('call-answered', async ({ answer }: { answer: RTCSessionDescriptionInit }) => {
-      await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer))
+      try {
+        const pc = pcRef.current
+        if (!pc) {
+          console.error('No peer connection when receiving answer')
+          return
+        }
+        
+        // Only set remote description if we're in the right state
+        if (pc.signalingState === 'have-local-offer') {
+          isSettingRemoteAnswerPendingRef.current = true
+          await pc.setRemoteDescription(new RTCSessionDescription(answer))
+          isSettingRemoteAnswerPendingRef.current = false
+        } else {
+          console.warn('Received answer but signaling state is:', pc.signalingState)
+        }
+      } catch (err) {
+        console.error('Error setting remote answer:', err)
+        isSettingRemoteAnswerPendingRef.current = false
+      }
     })
 
     // ICE candidates
     socket.on('ice-candidate', async ({ candidate }: { candidate: RTCIceCandidateInit }) => {
       try {
-        await pcRef.current?.addIceCandidate(new RTCIceCandidate(candidate))
-      } catch (e) { console.error('ICE error:', e) }
+        const pc = pcRef.current
+        if (!pc) {
+          console.warn('Received ICE candidate but no peer connection')
+          return
+        }
+        
+        // Wait if we're still setting remote description
+        if (isSettingRemoteAnswerPendingRef.current) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate))
+        } else {
+          console.warn('Received ICE candidate before remote description')
+        }
+      } catch (err) {
+        console.error('ICE candidate error:', err)
+      }
     })
 
     // Remote ended call
-    socket.on('call-ended', () => { cleanup(); doComplete() })
+    socket.on('call-ended', () => { 
+      cleanup()
+      doComplete() 
+    })
+    
     socket.on('peer-disconnected', () => {
       setStatusMsg('Other participant left')
       setError('The other participant has disconnected.')
+      // Auto cleanup after 5 seconds
+      setTimeout(() => {
+        cleanup()
+        doComplete()
+      }, 5000)
+    })
+
+    // Chat message received
+    socket.on('chat-message', ({ sender, senderRole, message, timestamp }: Omit<ChatMessage, 'id'>) => {
+      // Only add messages from other participants (not our own)
+      if (senderRole !== role) {
+        const newMessage: ChatMessage = {
+          id: `${timestamp}-${Math.random()}`,
+          sender,
+          senderRole,
+          message,
+          timestamp,
+        }
+        setChatMessages(prev => [...prev, newMessage])
+        
+        // Increment unread count if chat is closed
+        if (!chatOpen) {
+          setUnreadCount(prev => prev + 1)
+        }
+      }
     })
 
     // beforeunload beacon
@@ -278,12 +446,20 @@ export default function VideoRoom({
 
   // Controls
   function toggleMic() {
-    localStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = muted; })
+    if (!localStreamRef.current) return
+    const audioTracks = localStreamRef.current.getAudioTracks()
+    audioTracks.forEach((t) => { 
+      t.enabled = muted
+    })
     setMuted(!muted)
   }
 
   function toggleCam() {
-    localStreamRef.current?.getVideoTracks().forEach((t) => { t.enabled = camOff; })
+    if (!localStreamRef.current) return
+    const videoTracks = localStreamRef.current.getVideoTracks()
+    videoTracks.forEach((t) => { 
+      t.enabled = camOff
+    })
     setCamOff(!camOff)
   }
 
@@ -294,6 +470,48 @@ export default function VideoRoom({
     cleanup()
     doComplete()
   }
+
+  // Chat functions
+  function toggleChat() {
+    setChatOpen(!chatOpen)
+    if (!chatOpen) {
+      setUnreadCount(0) // Clear unread when opening
+    }
+  }
+
+  function sendMessage() {
+    if (!chatInput.trim() || !socketRef.current) return
+    
+    const message: Omit<ChatMessage, 'id'> = {
+      sender: displayName,
+      senderRole: role,
+      message: chatInput.trim(),
+      timestamp: Date.now(),
+    }
+
+    // Add to local messages immediately for instant feedback
+    const localMessage: ChatMessage = { ...message, id: `${message.timestamp}-local` }
+    setChatMessages(prev => [...prev, localMessage])
+    
+    // Send to peer via socket (server will NOT broadcast back to sender)
+    socketRef.current.emit('chat-message', { bookingId, ...message })
+    
+    setChatInput('')
+  }
+
+  function handleChatKeyPress(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendMessage()
+    }
+  }
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    if (chatOpen && chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [chatMessages, chatOpen])
 
   // ── Confirm (astrologer) ───────────────────────────────────────────────
   if (phase === 'confirm') {
@@ -308,8 +526,7 @@ export default function VideoRoom({
           </h1>
           <p className="text-sm mb-1" style={{ color: 'var(--text-primary)' }}>{consultationType}</p>
           <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
-            Scheduled: {new Date(slotStartISO).toDateString()} at{' '}
-            {new Date(slotStartISO).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            Scheduled: {new Date(slotStartISO).toDateString()} at {formatTime(slotStartISO)}
           </p>
           {secsToSlot > 0 && (
             <p className="text-xs mb-5 px-3 py-2 rounded-lg inline-block"
@@ -385,9 +602,9 @@ export default function VideoRoom({
   const isConnected = phase === 'live'
 
   return (
-    <div className="flex flex-col" style={{ height: '100vh', background: '#050510' }}>
+    <div className="fixed inset-0 flex flex-col" style={{ background: '#050510', overflow: 'hidden' }}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0 z-10"
+      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0 z-20"
         style={{ background: 'rgba(10,10,26,0.95)', borderBottom: '1px solid rgba(201,168,76,0.15)' }}>
         <p className="text-sm font-semibold gold-text" style={{ fontFamily: 'var(--font-cinzel)' }}>
           {consultationType}
@@ -410,14 +627,21 @@ export default function VideoRoom({
       </div>
 
       {/* Video area */}
-      <div className="flex-1 relative overflow-hidden" style={{ background: '#0a0a14' }}>
+      <div className="flex-1 relative" style={{ background: '#0a0a14', overflow: 'hidden' }}>
         {/* Remote video — full screen */}
         <video
           ref={remoteVideoRef}
           autoPlay
           playsInline
+          muted={false}
           className="w-full h-full object-cover"
           style={{ display: isConnected ? 'block' : 'none' }}
+          onLoadedMetadata={() => {
+            console.log('Remote video loaded')
+          }}
+          onError={(e) => {
+            console.error('Remote video error:', e)
+          }}
         />
 
         {/* Waiting overlay */}
@@ -444,15 +668,15 @@ export default function VideoRoom({
         )}
 
         {/* Self video — floating bottom-right */}
-        <div className="absolute bottom-20 right-4 rounded-xl overflow-hidden shadow-2xl"
-          style={{ width: '160px', height: '120px', border: '2px solid rgba(201,168,76,0.3)', background: '#111' }}>
+        <div className={`absolute rounded-xl overflow-hidden shadow-2xl ${chatOpen ? 'bottom-20 right-[336px]' : 'bottom-20 right-4'}`}
+          style={{ width: '160px', height: '120px', border: '2px solid rgba(201,168,76,0.3)', background: '#111', transition: 'right 0.3s ease' }}>
           <video
             ref={localVideoRef}
             autoPlay
             playsInline
             muted
             className="w-full h-full object-cover"
-            style={{ transform: 'scaleX(-1)' }}
+            style={{ transform: 'scaleX(-1)', display: camOff ? 'none' : 'block' }}
           />
           {camOff && (
             <div className="absolute inset-0 flex items-center justify-center"
@@ -465,10 +689,93 @@ export default function VideoRoom({
             You
           </div>
         </div>
+
+        {/* Chat Panel */}
+        {chatOpen && (
+          <div className="absolute top-0 right-0 bottom-0 w-80 flex flex-col"
+            style={{ background: 'rgba(10,10,26,0.98)', borderLeft: '1px solid rgba(201,168,76,0.2)', zIndex: 30 }}>
+            {/* Chat Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b flex-shrink-0"
+              style={{ borderColor: 'rgba(201,168,76,0.2)' }}>
+              <h3 className="text-sm font-semibold" style={{ color: 'var(--gold)', fontFamily: 'var(--font-cinzel)' }}>
+                Chat
+              </h3>
+              <button onClick={toggleChat}
+                className="w-8 h-8 rounded-full flex items-center justify-center transition-all hover:scale-110"
+                style={{ background: 'rgba(255,255,255,0.08)' }}
+                aria-label="Close chat">
+                <X size={16} style={{ color: 'var(--text-muted)' }} />
+              </button>
+            </div>
+
+            {/* Chat Messages */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" style={{ minHeight: 0 }}>
+              {chatMessages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-center">
+                  <MessageSquare size={32} style={{ color: 'var(--text-muted)', marginBottom: '8px' }} />
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    No messages yet. Start the conversation!
+                  </p>
+                </div>
+              ) : (
+                chatMessages.map((msg) => {
+                  const isOwn = msg.senderRole === role
+                  return (
+                    <div key={msg.id} className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[75%] rounded-lg px-3 py-2 ${isOwn ? 'rounded-br-none' : 'rounded-bl-none'}`}
+                        style={{ 
+                          background: isOwn ? 'linear-gradient(135deg, var(--gold-dark), var(--gold))' : 'rgba(255,255,255,0.08)',
+                          color: isOwn ? '#0a0a1a' : 'var(--text-primary)'
+                        }}>
+                        {!isOwn && (
+                          <p className="text-xs font-semibold mb-1" style={{ color: isOwn ? '#0a0a1a' : 'var(--gold)' }}>
+                            {msg.sender}
+                          </p>
+                        )}
+                        <p className="text-sm break-words">{msg.message}</p>
+                        <p className="text-xs mt-1 opacity-70">
+                          {formatMessageTime(msg.timestamp)}
+                        </p>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Chat Input */}
+            <div className="px-4 py-3 border-t flex-shrink-0" style={{ borderColor: 'rgba(201,168,76,0.2)' }}>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyPress={handleChatKeyPress}
+                  placeholder="Type a message..."
+                  className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+                  style={{ 
+                    background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(201,168,76,0.2)',
+                    color: 'var(--text-primary)'
+                  }}
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={!chatInput.trim()}
+                  className="w-10 h-10 rounded-lg flex items-center justify-center transition-all hover:scale-105 disabled:opacity-40 flex-shrink-0"
+                  style={{ background: 'linear-gradient(135deg, var(--gold-dark), var(--gold))' }}
+                  aria-label="Send message">
+                  <Send size={18} style={{ color: '#0a0a1a' }} />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Controls */}
-      <div className="flex items-center justify-center gap-4 py-4 flex-shrink-0"
+      <div className="flex items-center justify-center gap-4 py-4 flex-shrink-0 z-20"
         style={{ background: 'rgba(10,10,26,0.95)', borderTop: '1px solid rgba(201,168,76,0.1)' }}>
         {/* Mic */}
         <button onClick={toggleMic}
@@ -488,6 +795,20 @@ export default function VideoRoom({
           {camOff
             ? <VideoOff size={20} style={{ color: '#f87171' }} />
             : <Video size={20} style={{ color: 'var(--text-primary)' }} />}
+        </button>
+
+        {/* Chat */}
+        <button onClick={toggleChat}
+          className="w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 relative"
+          style={{ background: chatOpen ? 'rgba(201,168,76,0.2)' : 'rgba(255,255,255,0.08)' }}
+          aria-label="Toggle chat">
+          <MessageSquare size={20} style={{ color: chatOpen ? 'var(--gold)' : 'var(--text-primary)' }} />
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold"
+              style={{ background: '#ef4444', color: '#fff' }}>
+              {unreadCount > 9 ? '9+' : unreadCount}
+            </span>
+          )}
         </button>
 
         {/* End call */}
